@@ -1,9 +1,20 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
 import pyodbc
 import requests
+
+from flask_cors import CORS
+
 from deep_translator import GoogleTranslator
 
+from gtts import gTTS
+import os
+import uuid
+import io
+
+from urllib.parse import quote
+
 app = Flask(__name__)
+CORS(app)
 
 # =============================
 # KẾT NỐI DATABASE
@@ -16,7 +27,13 @@ conn = pyodbc.connect(
 )
 
 # =============================
-# HELPER: SAVE HISTORY
+# HELPER: TẠO URL AUDIO
+# =============================
+def build_tts_url(text, lang):
+    return f"/api/tts?text={quote(text)}&lang={lang}"
+
+# =============================
+# HELPER: LƯU LỊCH SỬ
 # =============================
 def save_history(user_id, session_id, source_text, translated_text):
     try:
@@ -245,14 +262,53 @@ def get_thesaurus(word):
     })
 
 # =============================
+# API: DANH SÁCH NGÔN NGỮ
+# =============================
+@app.route('/api/languages', methods=['GET'])
+def get_languages():
+    langs = GoogleTranslator(source='en', target='vi').get_supported_languages(as_dict=True)
+
+    return jsonify(langs)
+
+# =============================
+# API: STREAMING AUDIO
+# =============================
+@app.route('/api/tts', methods=['GET'])
+def tts():
+    text = request.args.get('text', '')
+    lang = request.args.get('lang', 'en')
+
+    if not text:
+        return "Missing text", 400
+
+    try:
+        tts = gTTS(text=text, lang=lang)
+
+        audio_bytes = io.BytesIO()
+        tts.write_to_fp(audio_bytes)
+        audio_bytes.seek(0)
+
+        return Response(
+            audio_bytes,
+            mimetype="audio/mpeg"
+        )
+    except Exception as e:
+        return str(e), 500
+
+# =============================
 # API: DỊCH
 # =============================
 @app.route('/api/translate', methods=['POST'])
 def translate():
     data = request.json
     text = data['text']
+    source = data.get('source_lang', 'en')
+    target = data.get('target_lang', 'vi')
     user_id = data.get('user_id')
     session_id = data.get('session_id')
+
+    if not text:
+        return jsonify({"error": "Text is required"}), 400
 
     cursor = conn.cursor()
 
@@ -260,13 +316,15 @@ def translate():
     if user_id:
         cursor.execute("""
             SELECT translated_text FROM History
-            WHERE user_id = ? AND source_text = ?
-        """, (user_id, text))
+            WHERE user_id = ? AND source_text = ? 
+            AND source_lang = ? AND target_lang = ?
+        """, (user_id, text, source, target))
     else:
         cursor.execute("""
             SELECT translated_text FROM History
-            WHERE session_id = ? AND source_text = ?
-        """, (session_id, text))
+            WHERE session_id = ? AND source_text = ? 
+            AND source_lang = ? AND target_lang = ?
+        """, (session_id, text, source, target))
 
     row = cursor.fetchone()
 
@@ -276,29 +334,31 @@ def translate():
         # update thời gian
         if user_id:
             cursor.execute("""
-                UPDATE History
-                SET created_at = GETDATE()
-                WHERE user_id = ? AND source_text = ?
-            """, (user_id, text))
+                UPDATE History SET created_at = GETDATE()
+                WHERE user_id = ? AND source_text = ? 
+                AND source_lang = ? AND target_lang = ?
+            """, (user_id, text, source, target))
         else:
             cursor.execute("""
-                UPDATE History
-                SET created_at = GETDATE()
-                WHERE session_id = ? AND source_text = ?
-            """, (session_id, text))
+                UPDATE History SET created_at = GETDATE()
+                WHERE session_id = ? AND source_text = ? 
+                AND source_lang = ? AND target_lang = ?
+            """, (session_id, text, source, target))
 
         conn.commit()
 
         return jsonify({
             "translatedText": translated_text,
+            "source_audio": build_tts_url(text, source),
+            "target_audio": build_tts_url(translated_text, target),
             "source": "database"
         })
 
     # 2. KHÔNG CÓ → GỌI GOOGLE
     try:
         translated_text = GoogleTranslator(
-            source='auto',
-            target='vi'
+            source=source,
+            target=target
         ).translate(text)
     except Exception as e:
         return jsonify({
@@ -309,23 +369,25 @@ def translate():
     # 3. LƯU DB
     try:
         cursor.execute("""
-            INSERT INTO History(user_id, session_id, source_text, translated_text)
-            VALUES (?, ?, ?, ?)
-        """, (user_id, session_id, text, translated_text))
+            INSERT INTO History(user_id, session_id, source_text, translated_text,
+                                source_lang, target_lang)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (user_id, session_id, text, translated_text,
+              source, target))
     except:
         # nếu trùng thì update time
         if user_id:
             cursor.execute("""
-                UPDATE History
-                SET created_at = GETDATE()
-                WHERE user_id = ? AND source_text = ?
-            """, (user_id, text))
+                UPDATE History SET created_at = GETDATE()
+                WHERE user_id = ? AND source_text = ? 
+                AND source_lang = ? AND target_lang = ?
+            """, (user_id, text, source, target))
         else:
             cursor.execute("""
-                UPDATE History
-                SET created_at = GETDATE()
-                WHERE session_id = ? AND source_text = ?
-            """, (session_id, text))
+                UPDATE History SET created_at = GETDATE()
+                WHERE session_id = ? AND source_text = ? 
+                AND source_lang = ? AND target_lang = ?
+            """, (session_id, text, source, target))
 
     # 4. GIỚI HẠN 100 lần
     if user_id:
@@ -353,6 +415,8 @@ def translate():
 
     return jsonify({
         "translatedText": translated_text,
+        "source_audio": build_tts_url(text, source),
+        "target_audio": build_tts_url(translated_text, target),
         "source": "api"
     })
 
@@ -411,14 +475,14 @@ def get_history():
 
     if user_id:
         cursor.execute("""
-            SELECT source_text, translated_text, created_at
+            SELECT source_text, translated_text, created_at, source_lang, target_lang
             FROM History
             WHERE user_id = ?
             ORDER BY created_at DESC
         """, (user_id,))
     else:
         cursor.execute("""
-            SELECT source_text, translated_text, created_at
+            SELECT source_text, translated_text, created_at, source_lang, target_lang
             FROM History
             WHERE session_id = ?
             ORDER BY created_at DESC
@@ -427,9 +491,13 @@ def get_history():
     results = []
     for row in cursor.fetchall():
         results.append({
-            "source": row[0],
-            "translated": row[1],
-            "time": str(row[2])
+            "source_text": row[0],
+            "translated_text": row[1],
+            "time": str(row[2]),
+            "source_lang": row[3],
+            "target_lang": row[4],
+            "source_audio": build_tts_url(row[0], row[3]),
+            "target_audio": build_tts_url(row[1], row[4])
         })
 
     return jsonify(results)
@@ -447,7 +515,7 @@ def merge_history():
 
     # lấy history guest
     cursor.execute("""
-        SELECT source_text, translated_text
+        SELECT source_text, translated_text, source_lang, target_lang
         FROM History
         WHERE session_id = ?
     """, (session_id,))
@@ -457,13 +525,15 @@ def merge_history():
     for row in guest_data:
         source = row[0]
         translated = row[1]
+        source_lang = row[2]
+        target_lang = row[3]
 
         try:
             # thử insert vào user
             cursor.execute("""
-                INSERT INTO History(user_id, source_text, translated_text)
-                VALUES (?, ?, ?)
-            """, (user_id, source, translated))
+                INSERT INTO History(user_id, source_text, translated_text, source_lang, target_lang)
+                VALUES (?, ?, ?, ?, ?)
+            """, (user_id, source, translated, source_lang, target_lang))
         except:
             # nếu trùng → update time
             cursor.execute("""
@@ -472,7 +542,9 @@ def merge_history():
                 WHERE user_id = ?
                 AND source_text = ?
                 AND translated_text = ?
-            """, (user_id, source, translated))
+                AND source_lang = ?
+                AND target_lang = ?
+            """, (user_id, source, translated, source_lang, target_lang))
 
     # xóa history guest
     cursor.execute("""

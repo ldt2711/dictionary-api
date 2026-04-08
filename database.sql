@@ -58,8 +58,10 @@ CREATE TABLE History (
     user_id INT NULL,
     session_id NVARCHAR(100),
 
-    source_text NVARCHAR(500),       
-    translated_text NVARCHAR(500),   
+    source_text NVARCHAR(500),
+    translated_text NVARCHAR(500),
+    source_lang NVARCHAR(10), 
+    target_lang NVARCHAR(10),
 
     created_at DATETIME DEFAULT GETDATE(),
 
@@ -69,12 +71,12 @@ GO
 
 -- chống trùng từ cho USER
 CREATE UNIQUE INDEX uq_user_history 
-ON History(user_id, source_text, translated_text)
+ON History(user_id, source_text, source_lang, target_lang)
 WHERE user_id IS NOT NULL
 
 -- chống trùng từ cho GUEST
 CREATE UNIQUE INDEX uq_session_history 
-ON History(session_id, source_text, translated_text)
+ON History(session_id, source_text, source_lang, target_lang)
 WHERE session_id IS NOT NULL
 
 -- =============================
