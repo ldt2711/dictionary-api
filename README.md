@@ -25,15 +25,13 @@ Hệ thống sử dụng kiến trúc **Hybrid (Database + External API)**:
 * 🌐 External APIs:
 
   * Dictionary API: https://dictionaryapi.dev
-  * Translate API: https://libretranslate.de
-
 ---
 
 ## 📁 Cấu trúc project
 
 ```
 dictionary-api/
-│── app.py
+│── main.py
 │── database.sql
 │── README.md
 ```
@@ -59,7 +57,7 @@ venv\Scripts\activate   # Windows
 ### 3. Cài thư viện
 
 ```
-pip install flask pyodbc requests
+pip install -r requirements.txt
 ```
 
 ---
@@ -80,7 +78,7 @@ database.sql
 
 ## 🔌 Cấu hình kết nối DB
 
-Trong `app.py`:
+Trong `main.py`:
 
 ```python
 conn = pyodbc.connect(
@@ -96,7 +94,7 @@ conn = pyodbc.connect(
 ## ▶️ Chạy server
 
 ```
-python app.py
+python main.py
 ```
 
 Server chạy tại:
