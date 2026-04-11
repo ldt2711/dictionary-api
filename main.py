@@ -33,6 +33,20 @@ def build_tts_url(text, lang):
     return f"/api/tts?text={quote(text)}&lang={lang}"
 
 # =============================
+# HELPER: CHUYỂN AUDIO
+# =============================
+def extract_audio(phonetics):
+    if not phonetics:
+        return ""
+
+    for p in phonetics:
+        audio = p.get("audio")
+        if audio and audio.strip() != "":
+            return audio
+
+    return ""
+
+# =============================
 # HELPER: LƯU LỊCH SỬ
 # =============================
 def save_history(user_id, session_id, source_text, translated_text):
@@ -114,11 +128,16 @@ def get_word(word):
                 "meaning": m[1],
                 "example": m[2]
             })
+        
+        # FALLBACK TTS nếu DB không có audio
+        audio = w[3]
+        if not audio:
+            audio = build_tts_url(word, "en")
 
         result = {
             "word": w[1],
             "phonetic": w[2],
-            "audio": w[3],
+            "audio": audio,
             "meanings": meanings,
             "source": "database"
         }
@@ -135,9 +154,11 @@ def get_word(word):
     data = res.json()[0]
 
     phonetic = data.get("phonetic", "")
-    audio = ""
-    if data.get("phonetics"):
-        audio = data["phonetics"][0].get("audio", "")
+    audio = extract_audio(data.get("phonetics", []))
+
+    # FALLBACK nếu không có audio
+    if not audio:
+        audio = build_tts_url(word, "en")
 
     # LƯU WORD
     cursor.execute(
