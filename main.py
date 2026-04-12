@@ -30,7 +30,7 @@ conn = pyodbc.connect(
 # HELPER: TẠO URL AUDIO
 # =============================
 def build_tts_url(text, lang):
-    return f"/api/tts?text={quote(text)}&lang={lang}"
+    return f"{request.host_url}api/tts?text={quote(text)}&lang={lang}"
 
 # =============================
 # HELPER: CHUYỂN AUDIO
