@@ -1,6 +1,7 @@
 from flask import Flask, jsonify, request, Response
 import pyodbc
 import requests
+from datetime import datetime
 import random
 CANDIDATE_WORDS = [
     "serendipity", "resilience", "eloquence", "ephemeral", "ubiquitous", 
@@ -244,11 +245,22 @@ def get_thesaurus(word):
 # =============================
 # API: DANH SÁCH NGÔN NGỮ
 # =============================
+CACHED_LANGUAGES = None
+
 @app.route('/api/languages', methods=['GET'])
 def get_languages():
-    langs = GoogleTranslator(source='en', target='vi').get_supported_languages(as_dict=True)
-
-    return jsonify(langs)
+    global CACHED_LANGUAGES
+    print("--- Requesting Language List ---") # Thêm log này để kiểm tra terminal
+    
+    if CACHED_LANGUAGES is None:
+        try:
+            # Chỉ lấy từ Google 1 lần duy nhất
+            CACHED_LANGUAGES = GoogleTranslator(source='en', target='vi').get_supported_languages(as_dict=True)
+        except Exception as e:
+            print(f"Lỗi lấy ngôn ngữ: {e}")
+            return jsonify({"en": "English", "vi": "Vietnamese"}), 200 # Trả về mặc định nếu lỗi
+            
+    return jsonify(CACHED_LANGUAGES)
 
 # =============================
 # API: STREAMING AUDIO
@@ -546,25 +558,34 @@ def merge_history():
     return jsonify({"message": "Merge success"})
 
 # =============================
-# API: LẤY 3 TỪ NGẪU NHIÊN
+# API: LẤY 1 TỪ NGẪU NHIÊN
 # =============================
 @app.route('/api/words/random', methods=['GET'])
 def get_random_words():
-    # Lấy ngẫu nhiên 3 từ từ danh sách CANDIDATE_WORDS
-    selected_words = random.sample(CANDIDATE_WORDS, 3)
-    results = []
-
-    for word in selected_words:
-        # Tái sử dụng logic tra từ (kiểm tra DB trước, sau đó gọi API ngoài)
-        # Ở đây mình gọi trực tiếp hàm get_word nhưng dưới dạng logic xử lý
-        word_data = fetch_word_data_internal(word) 
-        if word_data:
-            results.append(word_data)
+    # 1. Lấy ngày hiện tại dưới dạng chuỗi (VD: "2023-10-27")
+    today_str = datetime.now().strftime("%Y-%m-%d")
     
-    return jsonify(results)
+    # 2. Dùng chuỗi ngày này làm SEED
+    # Điều này đảm bảo trong cùng 1 ngày, kết quả random luôn là số đó
+    random.seed(today_str)
+    
+    # 3. Chọn từ ngẫu nhiên dựa trên seed đã thiết lập
+    selected_word = random.choice(CANDIDATE_WORDS)
+    
+    # 4. Reset seed về None để các hàm random khác trong hệ thống không bị ảnh hưởng
+    random.seed(None)
+
+    # 5. Lấy dữ liệu từ DB hoặc API ngoài
+    word_data = fetch_word_data_internal(selected_word)
+    
+    if word_data:
+        # Trả về object (hoặc list chứa 1 object tùy theo frontend của bạn)
+        return jsonify([word_data]) 
+    
+    return jsonify({"error": "Word not found"}), 404
 
 # =============================
 # RUN SERVER
 # =============================
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)
