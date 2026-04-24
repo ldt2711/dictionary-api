@@ -1,6 +1,14 @@
 from flask import Flask, jsonify, request, Response
 import pyodbc
 import requests
+import random
+CANDIDATE_WORDS = [
+    "serendipity", "resilience", "eloquence", "ephemeral", "ubiquitous", 
+    "mellifluous", "petrichor", "solitude", "luminescence", "sonorous",
+    "ineffable", "ethereal", "languor", "evocative", "denouement",
+    "ambiguous", "pragmatic", "tenacious", "magnanimous", "quintessential",
+    "grieving"
+]
 
 from flask_cors import CORS
 
@@ -100,104 +108,55 @@ def save_history(user_id, session_id, source_text, translated_text):
     conn.commit()
 
 # =============================
-# API: TRA TỪ (HYBRID)
+# HELPER: KIỂM TRA TỪ
 # =============================
-@app.route('/api/word/<word>', methods=['GET'])
-def get_word(word):
-    user_id = request.args.get('user_id')
-    session_id = request.args.get('session_id')
-
+def fetch_word_data_internal(word):
     cursor = conn.cursor()
-
     # 1. CHECK DB
     cursor.execute("SELECT * FROM Words WHERE word = ?", (word,))
     w = cursor.fetchone()
 
     if w:
         word_id = w[0]
-
-        cursor.execute("""
-            SELECT part_of_speech, meaning, example 
-            FROM Meanings WHERE word_id = ?
-        """, (word_id,))
-
-        meanings = []
-        for m in cursor.fetchall():
-            meanings.append({
-                "pos": m[0],
-                "meaning": m[1],
-                "example": m[2]
-            })
-        
-        # FALLBACK TTS nếu DB không có audio
-        audio = w[3]
-        if not audio:
-            audio = build_tts_url(word, "en")
-
-        result = {
-            "word": w[1],
-            "phonetic": w[2],
-            "audio": audio,
-            "meanings": meanings,
-            "source": "database"
-        }
-
-        return jsonify(result)
+        cursor.execute("SELECT part_of_speech, meaning, example FROM Meanings WHERE word_id = ?", (word_id,))
+        meanings = [{"pos": m[0], "meaning": m[1], "example": m[2]} for m in cursor.fetchall()]
+        audio = w[3] or build_tts_url(word, "en")
+        return {"word": w[1], "phonetic": w[2], "audio": audio, "meanings": meanings, "source": "database"}
 
     # 2. CALL API NGOÀI
     url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
-    res = requests.get(url)
+    try:
+        res = requests.get(url, timeout=5)
+        if res.status_code != 200: return None
 
-    if res.status_code != 200:
-        return jsonify({"message": "Word not found"}), 404
+        data = res.json()[0]
+        phonetic = data.get("phonetic", "")
+        audio = extract_audio(data.get("phonetics", [])) or build_tts_url(word, "en")
 
-    data = res.json()[0]
+        cursor.execute("INSERT INTO Words(word, phonetic, audio_url) OUTPUT INSERTED.id VALUES (?, ?, ?)", (word, phonetic, audio))
+        word_id = cursor.fetchone()[0]
 
-    phonetic = data.get("phonetic", "")
-    audio = extract_audio(data.get("phonetics", []))
+        meanings = []
+        for m in data["meanings"]:
+            pos = m["partOfSpeech"]
+            for d in m["definitions"]:
+                meaning, example = d["definition"], d.get("example", "")
+                cursor.execute("INSERT INTO Meanings(word_id, part_of_speech, meaning, example) VALUES (?, ?, ?, ?)", (word_id, pos, meaning, example))
+                meanings.append({"pos": pos, "meaning": meaning, "example": example})
+        conn.commit()
+        return {"word": word, "phonetic": phonetic, "audio": audio, "meanings": meanings, "source": "api"}
+    except:
+        return None
 
-    # FALLBACK nếu không có audio
-    if not audio:
-        audio = build_tts_url(word, "en")
-
-    # LƯU WORD
-    cursor.execute(
-        "INSERT INTO Words(word, phonetic, audio_url) OUTPUT INSERTED.id VALUES (?, ?, ?)",
-        (word, phonetic, audio)
-    )
-    word_id = cursor.fetchone()[0]
-
-    meanings = []
-
-    for m in data["meanings"]:
-        pos = m["partOfSpeech"]
-
-        for d in m["definitions"]:
-            meaning = d["definition"]
-            example = d.get("example", "")
-
-            cursor.execute("""
-                INSERT INTO Meanings(word_id, part_of_speech, meaning, example)
-                VALUES (?, ?, ?, ?)
-            """, (word_id, pos, meaning, example))
-
-            meanings.append({
-                "pos": pos,
-                "meaning": meaning,
-                "example": example
-            })
-
-    conn.commit()
-
-    result = {
-        "word": word,
-        "phonetic": phonetic,
-        "audio": audio,
-        "meanings": meanings,
-        "source": "api"
-    }
-
-    return jsonify(result)
+# =============================
+# API: TRA TỪ (HYBRID)
+# =============================
+@app.route('/api/word/<word>', methods=['GET'])
+def get_word(word):
+    result = fetch_word_data_internal(word)
+    if result:
+        return jsonify(result)
+    return jsonify({"message": "Word not found"}), 404
 
 # =============================
 # API: TỪ ĐỒNG NGHĨA
@@ -585,6 +544,24 @@ def merge_history():
     conn.commit()
 
     return jsonify({"message": "Merge success"})
+
+# =============================
+# API: LẤY 3 TỪ NGẪU NHIÊN
+# =============================
+@app.route('/api/words/random', methods=['GET'])
+def get_random_words():
+    # Lấy ngẫu nhiên 3 từ từ danh sách CANDIDATE_WORDS
+    selected_words = random.sample(CANDIDATE_WORDS, 3)
+    results = []
+
+    for word in selected_words:
+        # Tái sử dụng logic tra từ (kiểm tra DB trước, sau đó gọi API ngoài)
+        # Ở đây mình gọi trực tiếp hàm get_word nhưng dưới dạng logic xử lý
+        word_data = fetch_word_data_internal(word) 
+        if word_data:
+            results.append(word_data)
+    
+    return jsonify(results)
 
 # =============================
 # RUN SERVER
