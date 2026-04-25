@@ -39,7 +39,9 @@ conn = pyodbc.connect(
 # HELPER: TẠO URL AUDIO
 # =============================
 def build_tts_url(text, lang):
-    return f"{request.host_url}api/tts?text={quote(text)}&lang={lang}"
+    safe_text = quote(text)
+    # Trả về đường dẫn tương đối, Frontend sẽ tự động ghép với Base URL
+    return f"/tts?text={safe_text}&lang={lang}"
 
 # =============================
 # HELPER: CHUYỂN AUDIO
@@ -160,7 +162,7 @@ def get_word(word):
     return jsonify({"message": "Word not found"}), 404
 
 # =============================
-# API: TỪ ĐỒNG NGHĨA
+# API: QUAN HỆ TỪ
 # =============================
 @app.route('/api/thesaurus/<word>', methods=['GET'])
 def get_thesaurus(word):
@@ -266,14 +268,13 @@ def tts():
         
         response = make_response(send_file(
             audio_bytes, 
-            mimetype="audio/mpeg"
+            mimetype="audio/mpeg",
+            as_attachment=False # Quan trọng để stream trực tiếp
         ))
         
-        # BYPASS NGROK WARNING & ERR_NGROK_6024
-        response.headers["ngrok-skip-browser-warning"] = "any-value"
+        # Bypass Ngrok warning cho mọi nền tảng
+        response.headers["ngrok-skip-browser-warning"] = "true"
         response.headers["Access-Control-Allow-Origin"] = "*" 
-        response.headers["Content-Type"] = "audio/mpeg" # Ép kiểu chuẩn
-        
         return response
     except Exception as e:
         return str(e), 500
