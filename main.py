@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request, Response
+from flask import Flask, jsonify, request, send_file, make_response
 import pyodbc
 import requests
 from datetime import datetime
@@ -165,80 +165,67 @@ def get_word(word):
 @app.route('/api/thesaurus/<word>', methods=['GET'])
 def get_thesaurus(word):
     cursor = conn.cursor()
-
     # 1. CHECK DB
     cursor.execute("SELECT id FROM Words WHERE word = ?", (word,))
     w = cursor.fetchone()
-
     if w:
         word_id = w[0]
-
-        cursor.execute("""
-            SELECT thesaurus FROM Thesauruses
-            WHERE word_id = ?
-        """, (word_id,))
-
-        data = [row[0] for row in cursor.fetchall()]
-
-        if data:
+        # Lấy đồng nghĩa (type 0)
+        cursor.execute("SELECT thesaurus FROM Thesauruses WHERE word_id = ? AND relation_type = 0", (word_id,))
+        syns = [row[0] for row in cursor.fetchall()]
+        # Lấy trái nghĩa (type 1)
+        cursor.execute("SELECT thesaurus FROM Thesauruses WHERE word_id = ? AND relation_type = 1", (word_id,))
+        ants = [row[0] for row in cursor.fetchall()]
+        
+        if syns or ants:
             return jsonify({
                 "word": word,
-                "thesauruses": data,
+                "synonyms": syns,
+                "antonyms": ants,
                 "source": "database"
             })
 
-    # 2. GỌI API NGOÀI
+    # 2. GỌI API NGOÀI NẾU DB KHÔNG CÓ
     url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
     res = requests.get(url)
-
     if res.status_code != 200:
         return jsonify({"message": "Word not found"}), 404
-
+        
     data = res.json()[0]
-
-    thesauruses = set()
+    synonyms_set = set()
+    antonyms_set = set()
 
     for m in data.get("meanings", []):
-        for s in m.get("synonyms", []):
-            thesauruses.add(s)
+        for s in m.get("synonyms", []): synonyms_set.add(s)
+        for a in m.get("antonyms", []): antonyms_set.add(a)
         for d in m.get("definitions", []):
-            for s in d.get("synonyms", []):
-                thesauruses.add(s)
+            for s in d.get("synonyms", []): synonyms_set.add(s)
+            for a in d.get("antonyms", []): antonyms_set.add(a)
 
-    thesauruses = list(thesauruses)
+    syns = list(synonyms_set)
+    ants = list(antonyms_set)
 
-    if not thesauruses:
-        return jsonify({
-            "word": word,
-            "thesauruses": [],
-            "message": "No thesauruses found"
-        })
-
-    # LƯU TỪ VÀO DB
+    # LƯU VÀO DB
     if not w:
-        cursor.execute(
-            "INSERT INTO Words(word) OUTPUT INSERTED.id VALUES (?)",
-            (word,)
-        )
+        cursor.execute("INSERT INTO Words(word) OUTPUT INSERTED.id VALUES (?)", (word,))
         word_id = cursor.fetchone()[0]
     else:
         word_id = w[0]
 
-    # LƯU TỪ ĐỒNG NGHĨA
-    for s in thesauruses:
-        try:
-            cursor.execute("""
-                INSERT INTO Thesauruses(word_id, thesaurus)
-                VALUES (?, ?)
-            """, (word_id, s))
-        except:
-            pass
-
+    # Lưu synonyms (type 0)
+    for s in syns:
+        try: cursor.execute("INSERT INTO Thesauruses(word_id, thesaurus, relation_type) VALUES (?, ?, 0)", (word_id, s))
+        except: pass
+    # Lưu antonyms (type 1)
+    for a in ants:
+        try: cursor.execute("INSERT INTO Thesauruses(word_id, thesaurus, relation_type) VALUES (?, ?, 1)", (word_id, a))
+        except: pass
+        
     conn.commit()
-
     return jsonify({
         "word": word,
-        "thesauruses": thesauruses,
+        "synonyms": syns,
+        "antonyms": ants,
         "source": "api"
     })
 
@@ -269,21 +256,25 @@ def get_languages():
 def tts():
     text = request.args.get('text', '')
     lang = request.args.get('lang', 'en')
-
-    if not text:
-        return "Missing text", 400
-
+    if not text: return "Missing text", 400
+    
     try:
         tts = gTTS(text=text, lang=lang)
-
         audio_bytes = io.BytesIO()
         tts.write_to_fp(audio_bytes)
         audio_bytes.seek(0)
-
-        return Response(
-            audio_bytes,
+        
+        response = make_response(send_file(
+            audio_bytes, 
             mimetype="audio/mpeg"
-        )
+        ))
+        
+        # BYPASS NGROK WARNING & ERR_NGROK_6024
+        response.headers["ngrok-skip-browser-warning"] = "any-value"
+        response.headers["Access-Control-Allow-Origin"] = "*" 
+        response.headers["Content-Type"] = "audio/mpeg" # Ép kiểu chuẩn
+        
+        return response
     except Exception as e:
         return str(e), 500
 

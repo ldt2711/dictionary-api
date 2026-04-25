@@ -36,6 +36,7 @@ CREATE TABLE Thesauruses (
     id INT IDENTITY PRIMARY KEY,
     word_id INT,
     thesaurus NVARCHAR(100),
+    relation_type TINYINT DEFAULT 0, -- cột relation_type (0: Synonym, 1: Antonym)
 
     FOREIGN KEY (word_id) REFERENCES Words(id)
 )
@@ -83,4 +84,12 @@ WHERE session_id IS NOT NULL
 -- INDEX (tăng tốc search)
 -- =============================
 CREATE INDEX idx_word ON Words(word)
-CREATE INDEX idx_thes_word ON Thesauruses(word_id)
+CREATE INDEX idx_thes_word_type ON Thesauruses(word_id, relation_type);
+
+-- Sử dụng những dòng này nếu đã tạo sẵn bảng
+-- Thêm cột relation_type (0: Synonym, 1: Antonym)
+-- ALTER TABLE Thesauruses ADD relation_type TINYINT DEFAULT 0;
+-- GO
+
+-- -- Cập nhật INDEX để tìm kiếm nhanh hơn theo loại
+-- CREATE INDEX idx_thes_word_type ON Thesauruses(word_id, relation_type);
